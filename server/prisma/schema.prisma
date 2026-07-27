@@ -1,0 +1,198 @@
+generator client {
+  provider        = "prisma-client"
+  output          = "../generated/prisma"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [vector]
+}
+
+enum ProjectStatus {
+  PENDING
+  CLONING
+  PARSING
+  EMBEDDING
+  GRAPHING
+  GIT_INDEXING
+  READY
+  FAILED
+}
+
+enum BugSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ConfidenceLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  projects        Project[]
+  bugReports      BugReport[]
+  analysisResults AnalysisResult[]
+}
+
+model Project {
+  id          String        @id @default(uuid())
+  name        String
+  description String?
+  repoUrl     String?
+  repoType    String        @default("github") // "github" | "zip"
+  localPath   String
+  languages   String[]
+  status      ProjectStatus @default(PENDING)
+  errorMsg    String?
+  fileCount   Int           @default(0)
+  chunkCount  Int           @default(0)
+  commitCount Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  codeChunks      CodeChunk[]
+  commits         Commit[]
+  bugReports      BugReport[]
+  analysisResults AnalysisResult[]
+
+  @@index([userId])
+}
+
+model CodeChunk {
+  id           String   @id @default(uuid())
+  filePath     String
+  language     String
+  chunkType    String   // "function", "method", "class", "module"
+  className    String?  // null for standalone functions
+  functionName String
+  signature    String?
+  codeContent  String
+  startLine    Int
+  endLine      Int
+  imports      String[]
+  calls        String[]
+
+  // pgvector embedding (768 dimensions for Jina embeddings)
+  embedding Unsupported("vector(768)")?
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([filePath])
+  @@index([functionName])
+}
+
+model Commit {
+  id          String   @id @default(uuid())
+  commitHash  String
+  authorName  String
+  authorEmail String
+  message     String
+  committedAt DateTime
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  changes CommitChange[]
+
+  @@unique([projectId, commitHash])
+  @@index([projectId])
+  @@index([committedAt])
+}
+
+model CommitChange {
+  id         String  @id @default(uuid())
+  filePath   String
+  changeType String  // "added", "modified", "deleted"
+  additions  Int     @default(0)
+  deletions  Int     @default(0)
+  diff       String?
+
+  commitId String
+  commit   Commit @relation(fields: [commitId], references: [id], onDelete: Cascade)
+
+  @@index([commitId])
+  @@index([filePath])
+}
+
+model BugReport {
+  id               String      @id @default(uuid())
+  externalBugId    String?     // bug_id from CSV if provided
+  title            String
+  description      String
+  severity         BugSeverity @default(MEDIUM)
+  reporter         String?     // reporter from CSV or user
+  stepsToReproduce String?
+  source           String      @default("manual") // "manual" | "csv"
+  createdAt        DateTime    @default(now())
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  analysisResults AnalysisResult[]
+
+  @@index([projectId])
+}
+
+model AnalysisResult {
+  id    String @id @default(uuid())
+  status String @default("pending") // pending | processing | completed | failed
+
+  // AGTR Scores & Outputs
+  semanticScores  Json?
+  graphScores     Json?
+  gitScores       Json?
+  finalRanking    Json?
+
+  confidence      ConfidenceLevel?
+  confidenceValue Float?
+  semanticGap     Float?
+
+  agtrWeights Json?
+  hopsUsed    Int?
+
+  // LLM Outputs
+  rootCauseFile     String?
+  rootCauseFunction String?
+  rootCauseCommit   String?
+  explanation       String?
+  suggestedFix      String?
+  dependencyPath    String?
+
+  evidenceContext Json?
+
+  processingTimeMs Int?
+  createdAt        DateTime  @default(now())
+  completedAt      DateTime?
+
+  bugReportId String
+  bugReport   BugReport @relation(fields: [bugReportId], references: [id], onDelete: Cascade)
+
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@index([bugReportId])
+  @@index([projectId])
+}

@@ -1,0 +1,154 @@
+export type ProjectStatus = 'PENDING' | 'CLONING' | 'PARSING' | 'EMBEDDING' | 'GRAPHING' | 'GIT_INDEXING' | 'READY' | 'FAILED';
+export type BugSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+export type ConfidenceLevel = 'LOW' | 'MEDIUM' | 'HIGH';
+export type AnalysisStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
+/** Pipeline stages a project moves through before it can be analysed. */
+export const INDEXING_STAGES: ProjectStatus[] = [
+  'PENDING',
+  'CLONING',
+  'PARSING',
+  'EMBEDDING',
+  'GRAPHING',
+  'GIT_INDEXING',
+  'READY',
+];
+
+export interface Project {
+  id: string;
+  name: string;
+  description?: string;
+  repoUrl?: string;
+  repoType?: string;
+  localPath?: string;
+  status: ProjectStatus;
+  errorMsg?: string;
+  fileCount: number;
+  chunkCount: number;
+  commitCount: number;
+  languages: string[];
+  createdAt: string;
+  updatedAt: string;
+  _count?: {
+    codeChunks: number;
+    commits: number;
+    bugReports: number;
+  };
+}
+
+export interface CodeChunk {
+  id: string;
+  filePath: string;
+  language: string;
+  chunkType: string;
+  className?: string;
+  functionName: string;
+  signature?: string;
+  codeContent: string;
+  startLine: number;
+  endLine: number;
+  imports: string[];
+  calls: string[];
+}
+
+export interface Commit {
+  id: string;
+  commitHash: string;
+  authorName: string;
+  authorEmail: string;
+  message: string;
+  committedAt: string;
+}
+
+/** Shape returned by GET /api/projects/:id — includes a slice of related records. */
+export interface ProjectDetail extends Project {
+  codeChunks?: CodeChunk[];
+  commits?: Commit[];
+  bugReports?: BugReport[];
+}
+
+export interface BugReport {
+  id: string;
+  externalBugId?: string;
+  title: string;
+  description: string;
+  severity: BugSeverity;
+  reporter?: string;
+  stepsToReproduce?: string;
+  source: string;
+  createdAt: string;
+  projectId: string;
+  analysisResults?: AnalysisResult[];
+}
+
+export interface AGTRCandidate {
+  chunkId: string;
+  functionName: string;
+  filePath: string;
+  rank: number;
+  agtrScore: number;
+  semanticScore: number;
+  graphScore: number;
+  gitScore: number;
+  codeContent?: string;
+  className?: string;
+}
+
+export interface AGTRWeights {
+  ws: number;
+  wg: number;
+  wt: number;
+}
+
+/** Git evidence rows emitted by ai-server/app/analysis/git_scorer.py */
+export interface GitEvidenceCommit {
+  hash: string;
+  author: string;
+  date: string;
+  message: string;
+  diff?: string;
+}
+
+export interface EvidenceContext {
+  top_candidates?: unknown[];
+  dependency_paths?: string[];
+  git_commits?: GitEvidenceCommit[];
+  confidence_level?: string;
+  agtr_weights?: AGTRWeights;
+  confidence_gap_C?: number;
+}
+
+export interface AnalysisResult {
+  id: string;
+  status: AnalysisStatus;
+  semanticScores?: unknown;
+  graphScores?: unknown;
+  gitScores?: unknown;
+  finalRanking?: AGTRCandidate[];
+  confidence?: ConfidenceLevel;
+  confidenceValue?: number;
+  semanticGap?: number;
+  agtrWeights?: AGTRWeights;
+  hopsUsed?: number;
+  rootCauseFile?: string;
+  rootCauseFunction?: string;
+  rootCauseCommit?: string;
+  explanation?: string;
+  suggestedFix?: string;
+  dependencyPath?: string;
+  evidenceContext?: EvidenceContext;
+  processingTimeMs?: number;
+  createdAt: string;
+  completedAt?: string;
+  bugReportId: string;
+  projectId: string;
+  bugReport?: BugReport;
+  project?: Partial<Project>;
+}
+
+export interface HealthStatus {
+  status: string;
+  service: string;
+  timestamp?: string;
+  database?: string;
+}
