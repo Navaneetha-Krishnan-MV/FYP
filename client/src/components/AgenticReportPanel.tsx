@@ -13,12 +13,14 @@ import {
 } from 'lucide-react';
 import type { AnalysisResult } from '../types';
 import { AgentDecisionTimeline } from './AgentDecisionTimeline';
+import { AgentAGTRRanking } from './AgentAGTRRanking';
 
 const STAGES: Record<string, string> = {
   queued: 'Waiting for an analysis worker',
   starting: 'Checking repository and models',
   understand: 'Understanding the bug report',
   investigate: 'Specialist agents collecting repository evidence',
+  rank: 'AGTR scoring and ranking investigated candidates',
   reason: 'Comparing root-cause hypotheses',
   verify: 'Validating evidence and checking contradictions',
   replan: 'Refining investigation plan',
@@ -108,7 +110,7 @@ export function AgenticReportPanel({ analysis }: { analysis: AnalysisResult }) {
               )}
               <span className="text-xs font-bold">
                 {report.outcome === 'supported_hypothesis'
-                  ? 'Root Cause Verified'
+                  ? 'Hypothesis Supported'
                   : 'Inconclusive Analysis'}
               </span>
             </div>
@@ -204,6 +206,12 @@ export function AgenticReportPanel({ analysis }: { analysis: AnalysisResult }) {
       {/* ── Tab 2: Executive Report ────────────────────────────────── */}
       {(activeTab === 'report' || activeTab === 'all') && (
         <>
+          {context?.variant === 'agent-agtr' && analysis.agtrWeights && (
+            <AgentAGTRRanking candidates={analysis.finalRanking} weights={analysis.agtrWeights}
+              semanticGap={analysis.semanticGap} hopsUsed={analysis.hopsUsed}
+              availability={context.signal_availability} warnings={context.ranking_warnings}
+              selectedId={report?.primary_hypothesis?.candidate_id} rationale={report?.ranking_rationale} />
+          )}
           {report ? (
             <div className="space-y-5">
               <section className="glass-panel rounded-2xl border border-emerald-500/20 p-6 space-y-4">

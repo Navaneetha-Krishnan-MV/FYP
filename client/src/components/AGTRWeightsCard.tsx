@@ -8,6 +8,7 @@ interface AGTRWeightsCardProps {
   confidence?: string;
   confidenceValue?: number;
   hopsUsed?: number;
+  rankingOnly?: boolean;
 }
 
 const SIGNALS = [
@@ -45,6 +46,7 @@ export function AGTRWeightsCard({
   confidence,
   confidenceValue,
   hopsUsed,
+  rankingOnly = false,
 }: AGTRWeightsCardProps) {
   const confidenceStyle =
     (confidence && CONFIDENCE_STYLES[confidence]) ||
@@ -63,10 +65,10 @@ export function AGTRWeightsCard({
           </div>
         </div>
 
-        <span className={`px-3 py-1 text-xs font-bold rounded-full border ${confidenceStyle}`}>
+        {!rankingOnly && <span className={`px-3 py-1 text-xs font-bold rounded-full border ${confidenceStyle}`}>
           {confidence || 'UNKNOWN'} CONFIDENCE
-          {confidenceValue !== undefined && ` (${Math.round(confidenceValue * 100)}%)`}
-        </span>
+          {confidenceValue != null && ` (${Math.round(confidenceValue * 100)}%)`}
+        </span>}
       </div>
 
       {/* Confidence gap meter */}
@@ -74,7 +76,7 @@ export function AGTRWeightsCard({
         <div className="flex items-center gap-2">
           <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
           <div>
-            <div className="text-xs font-semibold text-slate-300">Retrieval Confidence Gap (C)</div>
+            <div className="text-xs font-semibold text-slate-300">{rankingOnly ? 'Semantic Seed Gap (C)' : 'Retrieval Confidence Gap (C)'}</div>
             <div className="text-[11px] text-slate-400">
               Separation between the top candidate and the rest
             </div>
@@ -82,10 +84,10 @@ export function AGTRWeightsCard({
         </div>
         <div className="text-right shrink-0">
           <div className="text-xl font-extrabold text-white font-mono">
-            {semanticGap !== undefined ? semanticGap.toFixed(4) : '—'}
+            {semanticGap != null ? semanticGap.toFixed(4) : '—'}
           </div>
           <div className="text-[10px] text-indigo-400 font-bold uppercase">
-            {hopsUsed !== undefined ? `${hopsUsed}-Hop Deep Traversal` : 'Hops not reported'}
+            {hopsUsed != null ? `${hopsUsed}-Hop Traversal` : 'Hops not reported'}
           </div>
         </div>
       </div>

@@ -18,6 +18,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import type { AnalysisResult, PhaseOutput, PhaseAgentTrace } from '../types';
+import { AgentAGTRRanking } from './AgentAGTRRanking';
 
 /* ── Phase metadata ────────────────────────────────────────────── */
 
@@ -38,6 +39,13 @@ const PHASE_META: Record<
     accent: 'text-sky-400',
     bg: 'bg-sky-500/10',
     border: 'border-sky-500/25',
+  },
+  rank: {
+    label: 'AGTR Rank',
+    icon: Network,
+    accent: 'text-purple-400',
+    bg: 'bg-purple-500/10',
+    border: 'border-purple-500/25',
   },
   reason: {
     label: 'Reason',
@@ -83,7 +91,7 @@ const VERDICT_BADGE: Record<string, { color: string; icon: typeof CheckCircle2; 
 
 /* ── Helpers ──────────────────────────────────────────────────── */
 
-const ALL_PHASES = ['understand', 'investigate', 'reason', 'verify', 'finalize'] as const;
+const ALL_PHASES = ['understand', 'investigate', 'rank', 'reason', 'verify', 'finalize'] as const;
 
 function inferPendingPhases(completed: PhaseOutput[], currentStage?: string): PhaseOutput[] {
   const seen = new Set(completed.map((p) => `${p.phase}-${p.round ?? 0}`));
@@ -243,6 +251,8 @@ function PhasePreview({ phase }: { phase: PhaseOutput }) {
           {phase.agent_traces?.length ? ` · ${phase.agent_traces.length} agent roles` : ''}
         </p>
       );
+    case 'rank':
+      return <p className="text-xs text-slate-400 mt-1">{phase.ranking?.length ?? 0} candidates ranked with adaptive semantic, graph and Git weights</p>;
     case 'reason':
       return (
         <p className="text-xs text-slate-400 mt-1">
@@ -282,6 +292,10 @@ function PhaseDetails({ phase }: { phase: PhaseOutput }) {
       return <UnderstandDetails phase={phase} />;
     case 'investigate':
       return <InvestigateDetails phase={phase} />;
+    case 'rank':
+      return <AgentAGTRRanking candidates={phase.ranking} weights={phase.weights}
+        semanticGap={phase.semantic_gap} hopsUsed={phase.hops_used}
+        availability={phase.signal_availability} warnings={phase.warnings} />;
     case 'reason':
       return <ReasonDetails phase={phase} />;
     case 'verify':
@@ -471,6 +485,7 @@ function ReasonDetails({ phase }: { phase: PhaseOutput }) {
                 <span className="text-xs font-mono text-indigo-300 break-all">{h.candidate_id}</span>
               </div>
               <p className="text-sm text-slate-200 mb-2">{h.mechanism}</p>
+              {h.ranking_rationale && <p className="text-xs text-amber-200 mb-2">Ranking rationale: {h.ranking_rationale}</p>}
               {h.suggested_fix && (
                 <div className="mb-2">
                   <span className="text-[10px] font-bold uppercase text-slate-500">Suggested Fix</span>

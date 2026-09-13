@@ -4,6 +4,11 @@ This guide describes the implemented MVP. The earlier plan remains the longer-te
 design. Core priorities are independent providers, real tools, source-backed claims,
 bounded control flow, and reliable analysis identity.
 
+On `agent-agtr`, investigation is followed by the legacy AGTR ranking stage on
+every round. See [Agent + AGTR integration](agent-agtr.md) for the formulas,
+persisted columns, configuration and research boundaries. Standalone AGTR stays
+on `main`; standalone agent investigation stays on `agent`.
+
 ## Independent reasoning and embedding options
 
 Edit `ai-server/.env`, then restart the Python API and worker:
@@ -130,7 +135,8 @@ flowchart TD
   Q[Exact analysis ID from persistent queue] --> U[Understand bug]
   U --> I[Code investigation with typed tools]
   I --> S[Git and dependency investigation when available]
-  S --> R[Reason over inspected source evidence]
+  S --> A[AGTR adaptive candidate ranking]
+  A --> R[Reason over ranked candidates and inspected source evidence]
   R --> V[Critique hypotheses and citations]
   V -->|Useful follow-up within budget| I
   V -->|Supported or insufficient evidence| F[Persist report and evidence]
@@ -274,9 +280,10 @@ rows, graph nodes and checkout.
 - AST call edges are approximate name matches, not confirmed runtime paths.
 - Git evidence is stored diff excerpts with historical-coordinate/truncation caveats;
   the MVP does not claim an introducing commit from recency alone.
-- Agentic candidate ordering is semantic relevance. Git/dependencies are evidence
-  for reasoning. Original AGTR math/pipeline and tests remain in the codebase;
-  full adaptive multi-signal ranking is deferred.
+- AGTR ranks the accumulated candidate pool using canonical semantic scores,
+  personalized PageRank and temporal Git relevance. Ranking is distinct from
+  causal support; missing signals receive zero weight. Historical-coordinate
+  alignment is conservative, as detailed in [the integration guide](agent-agtr.md).
 - No shell, automatic patches, runtime verification, checkpoint resumption,
   cancellation UI, SSE, or benchmark dashboard.
 - Existing authentication remains the single-user development setup. This is not

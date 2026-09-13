@@ -126,7 +126,7 @@ export interface PhaseAgentTrace {
 }
 
 export interface PhaseOutput {
-  phase: 'understand' | 'investigate' | 'reason' | 'verify' | 'replan' | 'finalize';
+  phase: 'understand' | 'investigate' | 'rank' | 'reason' | 'verify' | 'replan' | 'finalize';
   status: 'completed' | 'active' | 'pending';
   round?: number;
   decision?: string;
@@ -138,6 +138,14 @@ export interface PhaseOutput {
   findings?: { role: string; summary: string; evidence_ids: string[] }[];
   agent_traces?: PhaseAgentTrace[];
   new_evidence_count?: number;
+  // rank
+  weights?: AGTRWeights;
+  signal_availability?: Record<'semantic' | 'graph' | 'git', boolean>;
+  signal_gaps?: Record<'semantic' | 'graph' | 'git', number>;
+  semantic_gap?: number;
+  hops_used?: number;
+  ranking?: AGTRCandidate[];
+  warnings?: string[];
   // reason
   reason?: string;
   hypotheses?: {
@@ -147,6 +155,7 @@ export interface PhaseOutput {
     evidence_ids: string[];
     counterevidence_ids?: string[];
     assumptions: string[];
+    ranking_rationale?: string;
   }[];
   // verify
   verdict?: string;
@@ -164,6 +173,9 @@ export interface PhaseOutput {
 
 export interface EvidenceContext {
   engine?: 'agentic';
+  variant?: 'agent-agtr';
+  signal_availability?: Record<'semantic' | 'graph' | 'git', boolean>;
+  ranking_warnings?: string[];
   stage?: string;
   error?: string;
   reasoning?: { provider: string; model: string };
@@ -206,6 +218,7 @@ export interface AgenticHypothesis {
   suggested_fix: string;
   assumptions: string[];
   evidence_ids: string[];
+  ranking_rationale?: string;
 }
 
 export interface AgenticReport {
@@ -218,6 +231,8 @@ export interface AgenticReport {
   rounds_used: number;
   limitations: string[];
   verification: { explanation?: string };
+  selected_candidate_rank?: number | null;
+  ranking_rationale?: string;
 }
 
 export interface AnalysisResult {
