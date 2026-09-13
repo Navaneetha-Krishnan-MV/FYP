@@ -7,8 +7,9 @@ from app.database import get_db_connection
 from app.llm.gemini_client import GeminiClient
 from app.analysis.semantic_search import search_semantic_candidates
 from app.analysis.agtr import (
-    compute_retrieval_confidence,
-    calculate_agtr_weights,
+    compute_confidence_gap,
+    compute_zscore_gap,
+    calculate_agtr_weights_adaptive,
     determine_adaptive_hops,
     rank_candidates_agtr
 )
@@ -71,12 +72,11 @@ def run_agtr_analysis_pipeline(bug_report_id: str) -> Dict[str, Any]:
         # Step 2: Semantic Retrieval in pgvector
         semantic_seeds = search_semantic_candidates(project_id, search_query, top_k=15)
 
-        # Step 3 (AGTR Step 1 & 2): Measure Confidence C & calculate dynamic weights (ws, wg, wt)
-        C = compute_retrieval_confidence(semantic_seeds)
-        ws, wg, wt = calculate_agtr_weights(C)
+        # Step 3 (AGTR Step 1): Measure semantic confidence gap Cs
+        Cs = compute_confidence_gap([c.get("semantic_score", 0.0) for c in semantic_seeds])
 
-        # Step 4 (AGTR Step 2): Adaptive Hop Expansion
-        hops = determine_adaptive_hops(C)
+        # Step 4 (AGTR Step 2): Adaptive Hop Expansion (semantic confidence only)
+        hops = determine_adaptive_hops(Cs)
         expanded_candidates, dependency_paths = expand_graph_neighbors(
             project_id, semantic_seeds, hops=hops, lambda_decay=0.5
         )
@@ -86,19 +86,36 @@ def run_agtr_analysis_pipeline(bug_report_id: str) -> Dict[str, Any]:
             project_id, expanded_candidates, search_terms, mu_decay=0.05
         )
 
-        # Step 6 (AGTR Step 4): Final Candidate AGTR Ranking
+        # Step 6: Measure per-signal confidence via z-score gap (top1 vs
+        # rest, in units of that signal's own spread) now that graph and
+        # temporal scores both exist. Min-max-then-gap looked comparable
+        # across signals but wasn't: PageRank on a small graph is
+        # naturally power-law-shaped (a hub or two far ahead of a long
+        # tail) while semantic cosine similarity clusters tightly, so a
+        # min-max gap made the graph signal look "confident" almost
+        # regardless of query. The z-score gap is far less sensitive to
+        # that shape difference. Semantic uses its own z-score gap here
+        # too (Cs above stays min-max/raw - unchanged - for the
+        # confidence_label UI badge and hop-depth selection only).
+        Cs_z = compute_zscore_gap([c.get("semantic_score", 0.0) for c in semantic_seeds])
+        Cg_z = compute_zscore_gap([c.get("graph_score", 0.0) for c in scored_candidates])
+        Ct_z = compute_zscore_gap([c.get("git_score", 0.0) for c in scored_candidates])
+        ws, wg, wt = calculate_agtr_weights_adaptive(Cs_z, Cg_z, Ct_z)
+
+        # Step 7 (AGTR Step 4): Final Candidate AGTR Ranking
         final_ranked = rank_candidates_agtr(scored_candidates, ws, wg, wt)
 
-        # Determine confidence level label
-        if C > 0.30:
+        # Determine confidence level label - semantic confidence only,
+        # unchanged thresholds/behavior from before this redesign.
+        if Cs > 0.30:
             confidence_label = "HIGH"
-            confidence_val = min(0.95, 0.70 + C)
-        elif C > 0.15:
+            confidence_val = min(0.95, 0.70 + Cs)
+        elif Cs > 0.15:
             confidence_label = "MEDIUM"
-            confidence_val = min(0.85, 0.50 + C)
+            confidence_val = min(0.85, 0.50 + Cs)
         else:
             confidence_label = "LOW"
-            confidence_val = max(0.35, 0.20 + C)
+            confidence_val = max(0.35, 0.20 + Cs)
 
         # Top evidence package for RAG
         top_candidates = final_ranked[:settings.AGTR_LLM_CANDIDATES]
@@ -108,7 +125,7 @@ def run_agtr_analysis_pipeline(bug_report_id: str) -> Dict[str, Any]:
             "git_commits": git_commits,
             "confidence_level": confidence_label,
             "agtr_weights": {"ws": ws, "wg": wg, "wt": wt},
-            "confidence_gap_C": C
+            "confidence_gap_C": Cs
         }
 
         # Step 7: Grounded RAG & Gemini Reasoning
@@ -164,7 +181,7 @@ def run_agtr_analysis_pipeline(bug_report_id: str) -> Dict[str, Any]:
                 final_ranking_json,
                 confidence_label,
                 confidence_val,
-                C,
+                Cs,
                 json.dumps({"ws": ws, "wg": wg, "wt": wt}),
                 hops,
                 llm_output.get("root_cause_file"),
@@ -187,7 +204,7 @@ def run_agtr_analysis_pipeline(bug_report_id: str) -> Dict[str, Any]:
             "status": "completed",
             "confidence": confidence_label,
             "confidence_value": confidence_val,
-            "semantic_gap": C,
+            "semantic_gap": Cs,
             "agtr_weights": {"ws": ws, "wg": wg, "wt": wt},
             "root_cause_file": llm_output.get("root_cause_file"),
             "root_cause_function": llm_output.get("root_cause_function"),

@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
   CircleAlert,
@@ -43,6 +43,7 @@ const PIPELINE_STEPS = [
 
 export function AnalysisPage() {
   const { analysisId } = useParams<{ analysisId: string }>();
+  const navigate = useNavigate();
 
   const [retrying, setRetrying] = useState(false);
 
@@ -56,7 +57,6 @@ export function AnalysisPage() {
     data: analysis,
     error,
     loading,
-    refresh,
     setError,
   } = usePolledResource(
     fetcher,
@@ -66,9 +66,10 @@ export function AnalysisPage() {
 
   const handleRetry = async (bugReportId: string) => {
     setRetrying(true);
+    setError('');
     try {
-      await triggerAGTRAnalysis(bugReportId);
-      refresh();
+      const { analysisId: newAnalysisId } = await triggerAGTRAnalysis(bugReportId);
+      navigate(`/analysis/${newAnalysisId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to retrigger analysis');
     } finally {

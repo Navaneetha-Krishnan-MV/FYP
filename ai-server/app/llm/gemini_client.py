@@ -41,7 +41,7 @@ class GeminiClient:
 
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=settings.GEMINI_MODEL_NAME,
                 contents=prompt,
             )
             text = response.text.strip()
@@ -73,7 +73,7 @@ class GeminiClient:
         ])
 
         commits_str = "\n".join([
-            f"- Commit {c['hash']} by {c['author']} ({c['date']}): {c['message']}\n  Diff snippet: {c['diff'][:500]}"
+            f"- Commit {c['hash']} by {c['author']} ({c['date']}) | File: {c.get('file_path', 'unknown')}: {c['message']}\n  Diff snippet: {c['diff'][:500]}"
             for c in evidence_context.get("git_commits", [])
         ])
 
@@ -125,7 +125,7 @@ Respond ONLY with valid JSON.
 
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=settings.GEMINI_MODEL_NAME,
                 contents=prompt,
             )
             text = response.text.strip()

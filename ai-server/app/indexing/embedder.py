@@ -1,4 +1,6 @@
 import logging
+import random
+import threading
 import time
 from typing import Any, Dict, List
 
@@ -13,12 +15,62 @@ logger = logging.getLogger(__name__)
 
 RETRIEVAL_TASK_TYPE = "RETRIEVAL_DOCUMENT"
 QUERY_TASK_TYPE = "CODE_RETRIEVAL_QUERY"
-MAX_ATTEMPTS = 3
-RETRY_BACKOFF_SECONDS = (1, 3)
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
 class EmbeddingError(RuntimeError):
     """An embedding setup, inference, validation, or persistence failure."""
+
+
+class _EmbeddingRequestPacer:
+    """Space embedding requests across all indexing jobs in this process."""
+
+    _lock = threading.Lock()
+    _next_request_at = 0.0
+
+    @classmethod
+    def wait(cls) -> None:
+        requests_per_minute = settings.EMBEDDING_REQUESTS_PER_MINUTE
+        if requests_per_minute < 1:
+            raise EmbeddingError(
+                "EMBEDDING_REQUESTS_PER_MINUTE must be at least 1, got "
+                f"{requests_per_minute}"
+            )
+
+        interval_seconds = 60.0 / requests_per_minute
+        with cls._lock:
+            delay = max(0.0, cls._next_request_at - time.monotonic())
+            if delay:
+                logger.info(
+                    "embedding_request_paced delay_seconds=%.3f "
+                    "requests_per_minute=%d",
+                    delay,
+                    requests_per_minute,
+                )
+                time.sleep(delay)
+            cls._next_request_at = time.monotonic() + interval_seconds
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "code", None)
+    if status_code is None:
+        status_code = getattr(exc, "status_code", None)
+    if status_code in RETRYABLE_STATUS_CODES:
+        return True
+
+    # The SDK may surface transport failures without an HTTP status.
+    return isinstance(exc, (ConnectionError, TimeoutError))
+
+
+def _retry_delay_seconds(failed_attempt: int) -> float:
+    base = settings.EMBEDDING_RETRY_BASE_SECONDS
+    maximum = settings.EMBEDDING_RETRY_MAX_SECONDS
+    if base <= 0 or maximum <= 0:
+        raise EmbeddingError(
+            "Embedding retry delays must be greater than zero"
+        )
+    exponential_delay = min(maximum, base * (2 ** (failed_attempt - 1)))
+    return min(maximum, exponential_delay + random.uniform(0, base))
 
 
 class CodeEmbedder:
@@ -48,6 +100,11 @@ class CodeEmbedder:
             raise EmbeddingError(
                 f"EMBEDDING_BATCH_SIZE must be at least 1, got {effective_batch_size}"
             )
+        if settings.EMBEDDING_MAX_ATTEMPTS < 1:
+            raise EmbeddingError(
+                "EMBEDDING_MAX_ATTEMPTS must be at least 1, got "
+                f"{settings.EMBEDDING_MAX_ATTEMPTS}"
+            )
 
         all_vectors: List[List[float]] = []
         total_batches = (len(texts) + effective_batch_size - 1) // effective_batch_size
@@ -69,8 +126,9 @@ class CodeEmbedder:
             )
 
             last_exc: Exception | None = None
-            for attempt in range(1, MAX_ATTEMPTS + 1):
+            for attempt in range(1, settings.EMBEDDING_MAX_ATTEMPTS + 1):
                 try:
+                    _EmbeddingRequestPacer.wait()
                     response = client.models.embed_content(
                         model=settings.EMBEDDING_MODEL_NAME,
                         contents=batch,
@@ -79,7 +137,16 @@ class CodeEmbedder:
                             output_dimensionality=settings.EMBEDDING_DIMENSION,
                         ),
                     )
+                    if not response.embeddings:
+                        raise EmbeddingError(
+                            "Gemini returned no embeddings for a non-empty batch"
+                        )
                     batch_vectors = [list(e.values) for e in response.embeddings]
+                    if len(batch_vectors) != len(batch):
+                        raise EmbeddingError(
+                            "Embedding response count mismatch: requested "
+                            f"{len(batch)}, received {len(batch_vectors)}"
+                        )
                     invalid_dimensions = {
                         len(vector)
                         for vector in batch_vectors
@@ -103,20 +170,25 @@ class CodeEmbedder:
                     break
                 except Exception as exc:
                     last_exc = exc
-                    if isinstance(exc, EmbeddingError) or attempt == MAX_ATTEMPTS:
+                    retryable = _is_retryable_error(exc)
+                    if (
+                        isinstance(exc, EmbeddingError)
+                        or not retryable
+                        or attempt == settings.EMBEDDING_MAX_ATTEMPTS
+                    ):
                         break
-                    backoff = RETRY_BACKOFF_SECONDS[
-                        min(attempt - 1, len(RETRY_BACKOFF_SECONDS) - 1)
-                    ]
+                    backoff = _retry_delay_seconds(attempt)
                     logger.warning(
                         "embedding_batch_retry batch=%d/%d attempt=%d/%d "
-                        "backoff_seconds=%d exception_type=%s reason=%s",
+                        "backoff_seconds=%.3f exception_type=%s status_code=%s "
+                        "reason=%s",
                         batch_number,
                         total_batches,
                         attempt,
-                        MAX_ATTEMPTS,
+                        settings.EMBEDDING_MAX_ATTEMPTS,
                         backoff,
                         type(exc).__name__,
+                        getattr(exc, "code", getattr(exc, "status_code", None)),
                         str(exc) or repr(exc),
                     )
                     time.sleep(backoff)
@@ -136,7 +208,7 @@ class CodeEmbedder:
                     raise last_exc
                 raise EmbeddingError(
                     f"Embedding inference failed in batch {batch_number}/{total_batches} "
-                    f"after {MAX_ATTEMPTS} attempts "
+                    f"after {attempt} attempt(s) "
                     f"({type(last_exc).__name__}: {str(last_exc) or repr(last_exc)})"
                 ) from last_exc
 

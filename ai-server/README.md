@@ -10,13 +10,14 @@ Embedding readiness:
 curl http://localhost:8000/api/health/embedding
 ```
 
-This endpoint loads the configured Sentence Transformer, runs a probe inference,
-and verifies that its vector size matches `EMBEDDING_DIMENSION`. Pipeline stage,
-batch progress, exception type, reason, and traceback are written to
-`logs/ai-server.log`. A failed indexing run also stores its error ID, stage,
-exception type, and reason in `Project.errorMsg`.
+This endpoint calls the configured Gemini embedding model and verifies that its
+vector size matches `EMBEDDING_DIMENSION`. Repository chunks are sent with
+Gemini's synchronous batch-embedding request, using `EMBEDDING_BATCH_SIZE` texts
+per request. Calls from concurrent indexing jobs are serialized and paced by
+`EMBEDDING_REQUESTS_PER_MINUTE`; set that value at or below the active model RPM
+shown in Google AI Studio. Transient 408, 429, and 5xx responses use bounded
+exponential backoff with jitter.
 
-The default configuration uses the local Hugging Face model cache to avoid remote
-metadata retry loops. On a new machine, download the model once with network
-access and `EMBEDDING_LOCAL_FILES_ONLY=false`; production can then set it back to
-`true`.
+Pipeline stage, batch progress, exception type, reason, and traceback are written
+to `logs/ai-server.log`. A failed indexing run also stores its error ID, stage,
+exception type, and reason in `Project.errorMsg`.

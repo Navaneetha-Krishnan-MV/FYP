@@ -1,5 +1,55 @@
 from typing import List, Dict, Any, Tuple
+import networkx as nx
 from app.database import Neo4jManager, get_db_connection
+
+
+def fetch_call_graph_edges(project_id: str) -> List[Tuple[str, str]]:
+    """
+    Fetch every CALLS/DEPENDS_ON edge between Function nodes in this
+    project from Neo4j, as (chunkId_a, chunkId_b) pairs. No hop limit:
+    PageRank needs the full graph structure to be correct, not a
+    hop-limited neighborhood.
+    """
+    cypher = """
+    MATCH (a:Function {projectId: $projectId})-[:CALLS|DEPENDS_ON]-(b:Function {projectId: $projectId})
+    RETURN DISTINCT a.chunkId AS a, b.chunkId AS b;
+    """
+    records = Neo4jManager.execute_cypher(cypher, {"projectId": project_id})
+    return [(r["a"], r["b"]) for r in records if r.get("a") and r.get("b")]
+
+
+def compute_personalized_pagerank(
+    edges: List[Tuple[str, str]],
+    personalization: Dict[str, float],
+    alpha: float = 0.85,
+) -> Dict[str, float]:
+    """
+    Personalized PageRank over an undirected graph of the given edges,
+    restarting toward `personalization` (the semantic seed set, weighted
+    by semantic score). Undirected to match the existing Neo4j hop
+    traversal's undirected semantics: a function's structural
+    neighborhood includes both what it calls and what calls it.
+
+    Returns {} if there's no graph structure or no restart mass to
+    personalize toward - callers should fall back to another signal
+    (e.g. each node's own semantic score) in that case.
+    """
+    if not edges or not personalization:
+        return {}
+
+    total = sum(personalization.values())
+    if total <= 0:
+        return {}
+    normalized_personalization = {k: v / total for k, v in personalization.items()}
+
+    graph = nx.Graph()
+    graph.add_edges_from(edges)
+    # Ensure every personalized (seed) node exists in the graph even if it
+    # has no edges, so it can still receive its own restart mass.
+    graph.add_nodes_from(normalized_personalization.keys())
+
+    return nx.pagerank(graph, alpha=alpha, personalization=normalized_personalization)
+
 
 def expand_graph_neighbors(
     project_id: str,
@@ -17,21 +67,20 @@ def expand_graph_neighbors(
     seed_chunk_ids = [c["chunk_id"] for c in seed_candidates if c.get("chunk_id")]
     seed_scores = {c["chunk_id"]: float(c.get("semantic_score", 0.0)) for c in seed_candidates if c.get("chunk_id")}
 
-    graph_scores = {c["chunk_id"]: float(c.get("semantic_score", 0.0)) for c in seed_candidates if c.get("chunk_id")}
     dependency_paths = []
+    new_chunk_ids_to_fetch = set()
+    discovered_chunk_ids = set(seed_chunk_ids)
 
     try:
-        # Query Neo4j for 1..hops paths starting from seed chunkIds
+        # Query Neo4j for 1..hops paths starting from seed chunkIds, purely
+        # to determine which nodes are in scope and to build dependency
+        # path strings. Structural scoring itself comes from PageRank below.
         cypher = f"""
         MATCH (seed:Function {{projectId: $projectId}})
         WHERE seed.chunkId IN $seedChunkIds
         MATCH path = (seed)-[:CALLS|DEPENDS_ON*1..{hops}]-(target:Function {{projectId: $projectId}})
         RETURN
-            seed.chunkId AS seedChunkId,
             target.chunkId AS targetChunkId,
-            target.name AS targetName,
-            target.filePath AS targetPath,
-            length(path) AS distance,
             [n IN nodes(path) | coalesce(n.name, n.path)] AS pathNodes
         LIMIT 100;
         """
@@ -41,12 +90,8 @@ def expand_graph_neighbors(
             "seedChunkIds": seed_chunk_ids
         })
 
-        new_chunk_ids_to_fetch = set()
-
         for r in records:
-            s_id = r.get("seedChunkId")
             t_id = r.get("targetChunkId")
-            dist = r.get("distance", 1)
             nodes = r.get("pathNodes", [])
 
             if nodes:
@@ -54,17 +99,8 @@ def expand_graph_neighbors(
                 if path_str not in dependency_paths:
                     dependency_paths.append(path_str)
 
-            if not t_id:
-                continue
-
-            s_score = seed_scores.get(s_id, 0.5)
-            propagated_score = s_score * (lambda_decay ** dist)
-
-            # Accumulate graph score G(v)
-            if t_id in graph_scores:
-                graph_scores[t_id] = max(graph_scores[t_id], propagated_score)
-            else:
-                graph_scores[t_id] = propagated_score
+            if t_id and t_id not in discovered_chunk_ids:
+                discovered_chunk_ids.add(t_id)
                 new_chunk_ids_to_fetch.add(t_id)
 
     except Exception as e:
@@ -79,10 +115,22 @@ def expand_graph_neighbors(
         for fn in fetched_neighbors:
             candidate_map[fn["chunk_id"]] = fn
 
-    # Update graph_score G(v) for all candidates in candidate_map
+    # Score structural relevance via Personalized PageRank over the whole
+    # project call graph, falling back to each node's own semantic score
+    # (safe, degenerate-but-non-crashing behavior) if PageRank can't run.
+    pagerank_scores: Dict[str, float] = {}
+    try:
+        edges = fetch_call_graph_edges(project_id)
+        pagerank_scores = compute_personalized_pagerank(edges, seed_scores)
+    except Exception as e:
+        print(f"Personalized PageRank warning: {e}")
+
     all_candidates = []
     for chunk_id, c in candidate_map.items():
-        g_val = graph_scores.get(chunk_id, 0.0)
+        if chunk_id in pagerank_scores:
+            g_val = pagerank_scores[chunk_id]
+        else:
+            g_val = seed_scores.get(chunk_id, c.get("semantic_score", 0.0))
         c["graph_score"] = round(g_val, 4)
         if "semantic_score" not in c:
             c["semantic_score"] = 0.0

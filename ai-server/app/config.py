@@ -10,9 +10,17 @@ class Settings(BaseSettings):
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: str = "navan123"
     GEMINI_API_KEY: str = ""
+    GEMINI_MODEL_NAME: str = "gemini-3.6-flash"
     EMBEDDING_MODEL_NAME: str = "gemini-embedding-001"
     EMBEDDING_DIMENSION: int = 768
     EMBEDDING_BATCH_SIZE: int = 16
+    # Batch calls reduce request count, while this process-wide cap spaces calls
+    # from concurrent indexing jobs. Set it at or below the RPM shown for the
+    # embedding model in Google AI Studio.
+    EMBEDDING_REQUESTS_PER_MINUTE: int = 10
+    EMBEDDING_MAX_ATTEMPTS: int = 5
+    EMBEDDING_RETRY_BASE_SECONDS: float = 2.0
+    EMBEDDING_RETRY_MAX_SECONDS: float = 60.0
     # gemini-embedding-001 caps each input at 2048 tokens; code tokenizes denser
     # than prose, so keep a conservative chars-per-token margin. The Gemini
     # Developer API (unlike Vertex) rejects inputs over the limit outright

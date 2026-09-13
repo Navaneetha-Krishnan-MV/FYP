@@ -1,7 +1,37 @@
 import math
+import re
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Tuple
 from app.database import get_db_connection
+
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+
+
+def parse_diff_hunks(patch_text: str) -> List[Tuple[int, int]]:
+    """
+    Extract post-change (new-file) line ranges from unified diff hunk
+    headers, e.g. '@@ -10,5 +12,7 @@' covers new-file lines 12..18.
+    A patch may contain multiple hunks; all are returned.
+    """
+    if not patch_text:
+        return []
+
+    ranges = []
+    for match in _HUNK_HEADER_RE.finditer(patch_text):
+        start = int(match.group(1))
+        length = int(match.group(2)) if match.group(2) else 1
+        end = start + max(length - 1, 0)
+        ranges.append((start, end))
+    return ranges
+
+
+def hunks_overlap_range(hunks: List[Tuple[int, int]], start_line: int, end_line: int) -> bool:
+    """True if any hunk's line range overlaps [start_line, end_line]."""
+    for hunk_start, hunk_end in hunks:
+        if hunk_start <= end_line and start_line <= hunk_end:
+            return True
+    return False
+
 
 def compute_git_temporal_scores(
     project_id: str,
@@ -11,6 +41,11 @@ def compute_git_temporal_scores(
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Step 3 of AGTR: Temporal Git Decay T(v) = R(v) * e^(-mu * delta_t)
+
+    R(v) is scored per function, not per file: a commit's diff hunks are
+    checked for line-range overlap against each candidate's own
+    [start_line, end_line]. A direct hit (the commit touched this exact
+    function) scores higher than a same-file-but-different-function touch.
     """
     if not candidates:
         return candidates, []
@@ -42,7 +77,9 @@ def compute_git_temporal_scores(
         rows = cursor.fetchall()
 
         now = datetime.now(timezone.utc)
-        file_git_stats = {}
+        # file_path -> list of per-commit entries, each usable to score any
+        # candidate function in that file.
+        file_commit_entries: Dict[str, List[Dict[str, Any]]] = {}
 
         for r in rows:
             commit_hash = r[0]
@@ -57,53 +94,68 @@ def compute_git_temporal_scores(
                 committed_at = committed_at.replace(tzinfo=timezone.utc)
 
             delta_days = max(0.0, (now - committed_at).total_seconds() / 86400.0)
+            time_decay = math.exp(-mu_decay * delta_days)
 
-            # Compute message & diff relevance R(v)
-            r_v = 0.3 # base score for any modified file
+            # Topical relevance from commit message/diff text, independent
+            # of which exact lines changed.
             message_lower = message.lower()
             diff_lower = diff.lower()
-
+            term_bonus = 0.0
             for term in bug_search_terms:
                 term_lower = term.lower()
                 if term_lower in message_lower:
-                    r_v += 0.4
+                    term_bonus += 0.4
                 if term_lower in diff_lower:
-                    r_v += 0.3
+                    term_bonus += 0.3
 
-            r_v = min(1.0, r_v)
+            hunks = parse_diff_hunks(diff)
 
-            # Exponential decay: e^(-mu * delta_t)
-            time_decay = math.exp(-mu_decay * delta_days)
-            t_score = r_v * time_decay
+            file_commit_entries.setdefault(file_path, []).append({
+                "hunks": hunks,
+                "term_bonus": term_bonus,
+                "time_decay": time_decay,
+                "latest_commit": commit_hash[:8],
+            })
 
-            if file_path not in file_git_stats or t_score > file_git_stats[file_path]["git_score"]:
-                file_git_stats[file_path] = {
-                    "git_score": round(t_score, 4),
-                    "latest_commit": commit_hash[:8],
-                    "message": message,
-                    "author": author,
-                    "date": committed_at.strftime("%Y-%m-%d"),
-                    "diff": diff
-                }
-
-            if r_v > 0.4 and len(git_evidence_commits) < 5:
+            # File-level relevance, used only for the evidence commits shown
+            # to the LLM/UI - independent of per-candidate function scoring.
+            file_r_v = min(1.0, 0.3 + term_bonus)
+            if file_r_v > 0.4 and len(git_evidence_commits) < 5:
                 git_evidence_commits.append({
                     "hash": commit_hash[:8],
                     "author": author,
                     "date": committed_at.strftime("%Y-%m-%d"),
                     "message": message,
+                    "file_path": file_path,
                     "diff": diff[:500]
                 })
 
-        # Assign git_score to each candidate based on file_path match
+        # Assign git_score to each candidate based on function-level overlap
+        # with that file's commits: a direct hit (commit's hunk overlaps
+        # this exact function) scores higher than same-file-but-elsewhere,
+        # which scores higher than the file never being touched at all.
         for c in candidates:
             fp = c.get("file_path", "")
-            stats = file_git_stats.get(fp)
-            if stats:
-                c["git_score"] = stats["git_score"]
-                c["latest_commit"] = stats["latest_commit"]
+            start_line = c.get("start_line", 0) or 0
+            end_line = c.get("end_line", 0) or 0
+            entries = file_commit_entries.get(fp, [])
+
+            best_score = None
+            best_commit = None
+            for entry in entries:
+                direct_hit = hunks_overlap_range(entry["hunks"], start_line, end_line)
+                base = 0.3 if direct_hit else 0.15
+                r_v = min(1.0, base + entry["term_bonus"])
+                t_score = round(r_v * entry["time_decay"], 4)
+                if best_score is None or t_score > best_score:
+                    best_score = t_score
+                    best_commit = entry["latest_commit"]
+
+            if best_score is not None:
+                c["git_score"] = best_score
+                c["latest_commit"] = best_commit
             else:
-                c["git_score"] = 0.1 # baseline low git score
+                c["git_score"] = 0.1  # baseline: file never touched
                 c["latest_commit"] = "N/A"
 
     except Exception as e:
