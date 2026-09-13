@@ -16,6 +16,7 @@ class IndexRepositoryResponse(BaseModel):
 
 class AnalyzeBugRequest(BaseModel):
     bug_report_id: str
+    analysis_id: str
 
 class CandidateScore(BaseModel):
     chunk_id: str

@@ -19,13 +19,15 @@ export async function triggerRepositoryIndexing(projectId: string, repoUrl?: str
   return await response.json();
 }
 
-export async function triggerBugAnalysis(bugReportId: string) {
+export async function triggerBugAnalysis(bugReportId: string, analysisId: string) {
   const response = await fetch(`${AI_SERVER_URL}/api/analyze-bug`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       bug_report_id: bugReportId,
+      analysis_id: analysisId,
     }),
+    signal: AbortSignal.timeout(15000),
   });
 
   if (!response.ok) {

@@ -65,6 +65,7 @@ model Project {
   userId String
   user   User   @relation(fields: [userId], references: [id])
 
+  repositoryIndex RepositoryIndex?
   codeChunks      CodeChunk[]
   commits         Commit[]
   bugReports      BugReport[]
@@ -87,7 +88,7 @@ model CodeChunk {
   imports      String[]
   calls        String[]
 
-  // pgvector embedding (768 dimensions for Jina embeddings)
+  // Provider-independent 768-dimensional vectors; provenance is in RepositoryIndex.
   embedding Unsupported("vector(768)")?
 
   projectId String
@@ -96,6 +97,15 @@ model CodeChunk {
   @@index([projectId])
   @@index([filePath])
   @@index([functionName])
+}
+
+model RepositoryIndex {
+  projectId   String @id
+  generation  String
+  fingerprint Json @db.JsonB
+  revision    String
+  hasGit      Boolean @default(false)
+  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
 
 model Commit {
@@ -193,6 +203,7 @@ model AnalysisResult {
   userId String
   user   User   @relation(fields: [userId], references: [id])
 
+  @@index([status, createdAt], map: "AnalysisResult_queue_idx")
   @@index([bugReportId])
   @@index([projectId])
 }

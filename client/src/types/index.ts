@@ -109,13 +109,115 @@ export interface GitEvidenceCommit {
   diff?: string;
 }
 
+export interface PhaseToolStep {
+  step: number;
+  action: 'tool' | 'finish';
+  tool?: string;
+  arguments?: Record<string, unknown>;
+  status?: string;
+  evidence_ids?: string[];
+  summary?: string;
+}
+
+export interface PhaseAgentTrace {
+  role: string;
+  question: string;
+  trace: PhaseToolStep[];
+}
+
+export interface PhaseOutput {
+  phase: 'understand' | 'investigate' | 'reason' | 'verify' | 'replan' | 'finalize';
+  status: 'completed' | 'active' | 'pending';
+  round?: number;
+  decision?: string;
+  // understand
+  summary?: string;
+  search_terms?: string[];
+  missing_information?: string[];
+  // investigate
+  findings?: { role: string; summary: string; evidence_ids: string[] }[];
+  agent_traces?: PhaseAgentTrace[];
+  new_evidence_count?: number;
+  // reason
+  reason?: string;
+  hypotheses?: {
+    candidate_id: string;
+    mechanism: string;
+    suggested_fix: string;
+    evidence_ids: string[];
+    counterevidence_ids?: string[];
+    assumptions: string[];
+  }[];
+  // verify
+  verdict?: string;
+  primary_candidate_id?: string;
+  explanation?: string;
+  evidence_ids?: string[];
+  follow_up?: { role: string; question: string }[];
+  limitations?: string[];
+  // replan
+  tasks?: { role: string; question: string }[];
+  // finalize
+  termination_reason?: string;
+  rounds_used?: number;
+}
+
 export interface EvidenceContext {
+  engine?: 'agentic';
+  stage?: string;
+  error?: string;
+  reasoning?: { provider: string; model: string };
+  embedding?: { provider: string; model: string };
+  generation?: string;
+  revision?: string;
+  events?: { stage: string; round?: number }[];
+  evidence?: AgenticEvidence[];
+  report?: AgenticReport;
+  phase_outputs?: PhaseOutput[];
+  usage?: { llm_calls: number; tool_calls: number; elapsed_seconds: number };
   top_candidates?: unknown[];
   dependency_paths?: string[];
   git_commits?: GitEvidenceCommit[];
   confidence_level?: string;
   agtr_weights?: AGTRWeights;
   confidence_gap_C?: number;
+}
+
+export interface AgenticEvidence {
+  id: string;
+  kind: 'code' | 'git' | 'dependency';
+  file_path?: string;
+  function_name?: string;
+  start_line?: number;
+  end_line?: number;
+  code_content?: string;
+  diff?: string;
+  commit_hash?: string;
+  message?: string;
+  caller_id?: string;
+  callee_id?: string;
+  resolution?: string;
+  truncated?: boolean;
+}
+
+export interface AgenticHypothesis {
+  candidate_id: string;
+  mechanism: string;
+  suggested_fix: string;
+  assumptions: string[];
+  evidence_ids: string[];
+}
+
+export interface AgenticReport {
+  outcome: 'supported_hypothesis' | 'inconclusive';
+  primary_hypothesis: AgenticHypothesis | null;
+  hypotheses: AgenticHypothesis[];
+  support_level: string;
+  runtime_verified: boolean;
+  termination_reason: string;
+  rounds_used: number;
+  limitations: string[];
+  verification: { explanation?: string };
 }
 
 export interface AnalysisResult {

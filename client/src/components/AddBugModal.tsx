@@ -30,7 +30,7 @@ export const AddBugModal: React.FC<AddBugModalProps> = ({ projectId, isOpen, onC
 
     try {
       if (tab === 'single') {
-        if (!title || !description) throw new Error('Title and description are required');
+        if (!title.trim() || !description.trim()) throw new Error('Title and description are required');
         await createBugReport({
           projectId,
           title,
@@ -42,6 +42,9 @@ export const AddBugModal: React.FC<AddBugModalProps> = ({ projectId, isOpen, onC
         });
       } else {
         if (!csvFile) throw new Error('CSV file is required');
+        if (!csvFile.name.toLowerCase().endsWith('.csv')) {
+          throw new Error('Please select a CSV file');
+        }
         await uploadBugsCsv(projectId, csvFile);
       }
       onSuccess();
@@ -102,7 +105,11 @@ export const AddBugModal: React.FC<AddBugModalProps> = ({ projectId, isOpen, onC
         </div>
 
         {error && (
-          <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold">
+          <div
+            role="alert"
+            aria-live="polite"
+            className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold"
+          >
             {error}
           </div>
         )}

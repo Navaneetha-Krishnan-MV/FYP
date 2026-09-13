@@ -17,6 +17,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { AGTRWeightsCard } from '../components/AGTRWeightsCard';
+import { AgenticReportPanel } from '../components/AgenticReportPanel';
 import { SubgraphVisualizer } from '../components/SubgraphVisualizer';
 import { fetchAnalysisById, triggerAGTRAnalysis } from '../services/api';
 import { usePolledResource } from '../hooks/usePolledResource';
@@ -190,9 +191,10 @@ export function AnalysisPage() {
         </div>
       )}
 
-      {(analysis.status === 'pending' || analysis.status === 'processing') && <RunningPanel />}
+      {analysis.evidenceContext?.engine === 'agentic' && <AgenticReportPanel analysis={analysis} />}
+      {analysis.evidenceContext?.engine !== 'agentic' && (analysis.status === 'pending' || analysis.status === 'processing') && <RunningPanel />}
 
-      {analysis.status === 'failed' && (
+      {analysis.evidenceContext?.engine !== 'agentic' && analysis.status === 'failed' && (
         <div className="glass-panel rounded-2xl border border-rose-500/25 p-8 text-center space-y-3">
           <CircleAlert className="w-8 h-8 text-rose-400 mx-auto" />
           <h2 className="text-lg font-bold text-white">AGTR pipeline failed</h2>
@@ -203,7 +205,7 @@ export function AnalysisPage() {
         </div>
       )}
 
-      {analysis.status === 'completed' && (
+      {analysis.evidenceContext?.engine !== 'agentic' && analysis.status === 'completed' && (
         <>
           <RootCausePanel analysis={analysis} />
 

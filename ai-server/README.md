@@ -1,23 +1,37 @@
-Run:
+# CodeLens AI service
+
+The MVP uses LangGraph for bounded root-cause investigation and LangChain for
+cloud/local reasoning and typed tools. Providers are independent:
+
+```dotenv
+REASONING_PROVIDER=cloud
+EMBEDDING_PROVIDER=local
+```
+
+Cloud uses Gemini; local uses Ollama. Either switch accepts `cloud` or `local`.
+Changing embeddings requires reindexing, even when dimensions stay the same.
+
+From this directory, after configuring `.env` and the existing application database:
+
+```bash
+uv sync --frozen
+uv run python -m app.cli setup
+uv run python -m app.cli doctor --probe-model
+```
+
+Start the API and worker in separate terminals:
 
 ```bash
 uv run uvicorn main:app --reload --port 8000
+uv run python worker.py
 ```
 
-Embedding readiness:
+Without the worker, submitted analyses remain queued. Interrupted jobs restart
+with an attempt limit; the MVP does not resume LangGraph checkpoints.
 
 ```bash
-curl http://localhost:8000/api/health/embedding
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run pytest -q
 ```
 
-This endpoint calls the configured Gemini embedding model and verifies that its
-vector size matches `EMBEDDING_DIMENSION`. Repository chunks are sent with
-Gemini's synchronous batch-embedding request, using `EMBEDDING_BATCH_SIZE` texts
-per request. Calls from concurrent indexing jobs are serialized and paced by
-`EMBEDDING_REQUESTS_PER_MINUTE`; set that value at or below the active model RPM
-shown in Google AI Studio. Transient 408, 429, and 5xx responses use bounded
-exponential backoff with jitter.
-
-Pipeline stage, batch progress, exception type, reason, and traceback are written
-to `logs/ai-server.log`. A failed indexing run also stores its error ID, stage,
-exception type, and reason in `Project.errorMsg`.
+See [the implemented MVP guide](../docs/agentic-rca-mvp.md) for setup, provider
+combinations, architecture, tools, prompts, live testing and limitations.

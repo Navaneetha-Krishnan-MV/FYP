@@ -1,15 +1,14 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { getOrCreateDefaultUser } from "../lib/defaultUser.js";
-import { triggerBugAnalysis } from "../services/aiClient.js";
 
 const router: ReturnType<typeof Router> = Router();
 
-// Trigger AGTR bug analysis
+// AnalysisResult is the durable MVP queue; the Python worker claims exact IDs.
 router.post("/trigger", async (req, res, next) => {
   try {
     const { bugReportId } = req.body;
-    if (!bugReportId) {
+    if (typeof bugReportId !== "string" || !bugReportId) {
       return res.status(400).json({ error: "bugReportId is required" });
     }
 
@@ -21,6 +20,11 @@ router.post("/trigger", async (req, res, next) => {
       return res.status(404).json({ error: "Bug report not found" });
     }
 
+    const project = await prisma.project.findUnique({ where: { id: bugReport.projectId } });
+    if (project?.status !== "READY") {
+      return res.status(409).json({ error: "Project must finish indexing before analysis" });
+    }
+
     const user = await getOrCreateDefaultUser();
 
     // Create pending analysis record
@@ -30,16 +34,12 @@ router.post("/trigger", async (req, res, next) => {
         projectId: bugReport.projectId,
         userId: user.id,
         status: "pending",
+        evidenceContext: { engine: "agentic", schema_version: 1, stage: "queued" },
       },
     });
 
-    // Trigger AI Server async pipeline
-    triggerBugAnalysis(bugReportId).catch((err) => {
-      console.error(`Background AGTR analysis failed for bug ${bugReportId}:`, err);
-    });
-
     res.status(202).json({
-      message: "AGTR Analysis triggered successfully",
+      message: "Analysis queued successfully",
       analysisId: analysis.id,
     });
   } catch (error) {

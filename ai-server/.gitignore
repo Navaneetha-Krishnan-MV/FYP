@@ -12,3 +12,5 @@ wheels/
 # Local secrets and runtime output
 .env
 logs/
+
+data/

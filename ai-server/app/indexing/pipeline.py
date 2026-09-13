@@ -2,6 +2,12 @@ import os
 import logging
 import time
 import uuid
+from pathlib import Path
+import hashlib
+import git
+from app.repositories.indexes import project_lock, save_index
+from app.embeddings.fingerprint import embedding_fingerprint
+from app.repositories.paths import allowed_source
 from typing import Optional
 from app.database import get_db_connection
 from app.indexing.cloner import prepare_repository
@@ -67,6 +73,11 @@ def update_project_status(project_id: str, status: str, error_msg: Optional[str]
             conn.close()
 
 def run_indexing_pipeline(project_id: str, repo_url: Optional[str] = None, zip_path: Optional[str] = None):
+    with project_lock(project_id) as lock_conn:
+        return _run_indexing_locked(project_id, repo_url, zip_path, lock_conn)
+
+
+def _run_indexing_locked(project_id, repo_url, zip_path, lock_conn):
     started_at = time.perf_counter()
     run_id = str(uuid.uuid4())
     stage = "STARTING"
@@ -78,6 +89,7 @@ def run_indexing_pipeline(project_id: str, repo_url: Optional[str] = None, zip_p
     )
 
     try:
+        fingerprint = embedding_fingerprint()
         # Step 1: Clone / Extract Repo
         stage = "CLONING"
         update_project_status(project_id, "CLONING")
@@ -116,6 +128,8 @@ def run_indexing_pipeline(project_id: str, repo_url: Optional[str] = None, zip_p
                 ext = os.path.splitext(f)[1].lower()
                 if ext in [".py", ".js", ".jsx", ".ts", ".tsx", ".java"]:
                     file_path = os.path.join(root, f)
+                    if not allowed_source(Path(repo_dir), Path(file_path)):
+                        continue
                     chunks = parse_file(file_path, repo_dir)
                     if chunks:
                         all_chunks.extend(chunks)
@@ -203,6 +217,14 @@ def run_indexing_pipeline(project_id: str, repo_url: Optional[str] = None, zip_p
             commit_count,
         )
 
+        # Recheck the embedding fingerprint before publishing this generation.
+        if fingerprint != embedding_fingerprint():
+            raise RuntimeError("Embedding configuration changed during indexing; retry indexing.")
+        has_git = (Path(repo_dir) / ".git").exists()
+        revision = git.Repo(repo_dir).head.commit.hexsha if has_git else hashlib.sha256(
+            "".join(c.file_path + c.code_content for c in all_chunks).encode()
+        ).hexdigest()
+        save_index(lock_conn, project_id, run_id, fingerprint, revision, has_git, repo_dir)
         # Step 6: Complete
         stage = "FINALIZING"
         update_project_status(

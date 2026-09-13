@@ -4,8 +4,8 @@ import pytest
 from google.genai.errors import ClientError
 
 from app.config import settings
-from app.indexing import embedder
-from app.indexing.embedder import CodeEmbedder, EmbeddingError
+from app.embeddings import gemini as embedder
+from app.embeddings.gemini import GeminiEmbedder as CodeEmbedder, EmbeddingError
 from app.llm.gemini_client import GeminiClient
 
 

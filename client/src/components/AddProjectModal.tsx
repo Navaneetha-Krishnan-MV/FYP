@@ -26,13 +26,16 @@ export const AddProjectModal: React.FC<AddProjectModalProps> = ({ isOpen, onClos
 
     try {
       if (tab === 'github') {
-        if (!name || !repoUrl) {
+        if (!name.trim() || !repoUrl.trim()) {
           throw new Error('Project name and GitHub URL are required');
         }
         await createProjectGithub(name, description, repoUrl);
       } else {
-        if (!name || !zipFile) {
+        if (!name.trim() || !zipFile) {
           throw new Error('Project name and ZIP file are required');
+        }
+        if (!zipFile.name.toLowerCase().endsWith('.zip')) {
+          throw new Error('Please select a ZIP archive');
         }
         await createProjectZip(name, description, zipFile);
       }
@@ -94,7 +97,11 @@ export const AddProjectModal: React.FC<AddProjectModalProps> = ({ isOpen, onClos
         </div>
 
         {error && (
-          <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold">
+          <div
+            role="alert"
+            aria-live="polite"
+            className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold"
+          >
             {error}
           </div>
         )}

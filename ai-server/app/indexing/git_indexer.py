@@ -7,15 +7,15 @@ from app.database import get_db_connection
 def extract_and_save_git_history(project_id: str, repo_dir: str, max_commits: int = 100) -> int:
     git_dir = os.path.join(repo_dir, ".git")
     if not os.path.exists(git_dir):
-        print(f"No .git directory found in {repo_dir}. Creating a synthetic git commit for repository snapshot.")
-        return create_synthetic_git_history(project_id, repo_dir)
+        print(f"No .git directory found in {repo_dir}. Git evidence will be unavailable.")
+        return 0
 
     try:
         repo = git.Repo(repo_dir)
         commits = list(repo.iter_commits(max_count=max_commits))
     except Exception as e:
         print(f"Error reading Git repository at {repo_dir}: {e}")
-        return create_synthetic_git_history(project_id, repo_dir)
+        return 0
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -23,6 +23,7 @@ def extract_and_save_git_history(project_id: str, repo_dir: str, max_commits: in
     saved_commit_count = 0
 
     try:
+        cursor.execute('DELETE FROM "Commit" WHERE "projectId"=%s', (project_id,))
         for commit in commits:
             committed_at = datetime.fromtimestamp(commit.committed_date)
             commit_hash = commit.hexsha
