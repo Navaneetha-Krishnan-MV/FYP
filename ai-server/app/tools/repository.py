@@ -10,8 +10,36 @@ CHUNK_COLUMNS = '''"id" AS chunk_id, "filePath" AS file_path,
 
 
 class RepositoryTools:
-    def __init__(self, conn, project_id: str, index: dict):
+    def __init__(self, conn, project_id: str, index: dict, as_of=None):
         self.conn, self.project_id, self.index = conn, project_id, index
+        self.as_of = as_of
+        self._ranking_vectors = {}
+
+    def score_semantic_candidates(self, query, chunk_ids):
+        """One canonical query for every candidate, regardless of discovery tool."""
+        if query not in self._ranking_vectors:
+            self._ranking_vectors[query] = str(CodeEmbedder.embed_text(query))
+        rows = self.rows('''SELECT id AS chunk_id, 1-(embedding <=> %s::vector) AS score
+            FROM "CodeChunk" WHERE "projectId"=%s AND id=ANY(%s) AND embedding IS NOT NULL''',
+            (self._ranking_vectors[query], self.project_id, chunk_ids))
+        return {r["chunk_id"]: float(r["score"]) for r in rows}
+
+    def ranking_graph(self):
+        records = Neo4jManager.execute_cypher('''
+            MATCH (a:Function {projectId: $project})-[:CALLS|DEPENDS_ON]-(b:Function {projectId: $project})
+            RETURN DISTINCT a.chunkId AS a, b.chunkId AS b ORDER BY a, b LIMIT 20001''', {"project": self.project_id})
+        if len(records) > 20000:
+            raise ValueError("Graph exceeds bounded AGTR scoring size; partial PageRank is not used")
+        return [(r["a"], r["b"]) for r in records if r.get("a") and r.get("b")]
+
+    def score_git_candidates(self, candidates, search_terms, as_of):
+        from app.analysis.git_scorer import compute_git_temporal_scores
+        metadata = {}
+        scored, commits = compute_git_temporal_scores(
+            self.project_id, candidates, search_terms, connection=self.conn,
+            as_of=as_of, strict=True, aligned_revision=self.index["revision"], metadata=metadata,
+        )
+        return scored, commits, metadata.get("available", False)
 
     def rows(self, query, args):
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -63,7 +91,9 @@ class RepositoryTools:
             FROM "Commit" c JOIN "CommitChange" cc ON cc."commitId"=c.id
             WHERE c."projectId"=%s AND cc."filePath"=%s
             AND c."commitHash" <> 'initial-snapshot-0000000000000000'
-            ORDER BY c."committedAt" DESC LIMIT %s''', (self.project_id, chunk["file_path"], limit))
+            AND (%s::timestamp IS NULL OR c."committedAt" <= %s)
+            ORDER BY c."committedAt" DESC, c."commitHash" LIMIT %s''',
+            (self.project_id, chunk["file_path"], self.as_of, self.as_of, limit))
 
     def dependency_neighbors(self, chunk_id):
         self.chunk(chunk_id)

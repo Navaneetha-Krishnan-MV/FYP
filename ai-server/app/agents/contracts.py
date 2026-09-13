@@ -45,6 +45,7 @@ class Hypothesis(Contract):
     counterevidence_ids: list[Identifier] = Field(default_factory=list, max_length=8)
     assumptions: list[Text] = Field(default_factory=list, max_length=5)
     suggested_fix: Text
+    ranking_rationale: Text = ""
 
 
 class Hypotheses(Contract):

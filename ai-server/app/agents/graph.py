@@ -6,10 +6,12 @@ from app.agents.runner import run_role
 from app.agents.state import InvestigationState
 from app.config import settings
 from app.llm.structured_output import ModelOutputError
+from app.analysis.agentic_agtr import AgenticAGTR, ranking_columns
 
 
-def build_investigation(gateway, tools, progress=lambda stage, details: None):
+def build_investigation(gateway, tools, progress=lambda stage, details: None, ranker=None):
     """Sequential MVP graph. Python owns routing, stopping and final validation."""
+    ranker = ranker or AgenticAGTR(tools)
 
     def _append_phase(state, phase):
         """Append a phase output dict to the accumulator."""
@@ -72,15 +74,38 @@ def build_investigation(gateway, tools, progress=lambda stage, details: None):
         return {"round": round_number, "findings": findings, "evidence_count_before": before,
                 "phase_outputs": _append_phase(state, phase)}
 
+    def rank(state):
+        progress("rank", {"round": state["round"]})
+        result = ranker.rank(state["signals"]["summary"], state["signals"]["search_terms"], state["round"])
+        # Persist metadata without source bodies (observations carry the actual code).
+        snapshot = {**result, "ranked_candidates": [{k: v for k, v in c.items() if k != "code_content"}
+                                                     for c in result["ranked_candidates"]]}
+        phase = {"phase": "rank", "status": "completed", "round": state["round"],
+                 "summary": "AGTR ranked the accumulated candidates before causal reasoning.",
+                 "weights": result["agtr_weights"], "signal_availability": result["signal_availability"],
+                 "signal_gaps": result["signal_gaps"], "semantic_gap": result["semantic_gap"],
+                 "hops_used": result["hops_used"], "ranking": ranking_columns(result)["finalRanking"],
+                 "warnings": result["warnings"]}
+        progress("rank", {"round": state["round"], "output": phase, "ranking": snapshot})
+        return {"agtr_ranking": snapshot, "ranking_history": [*state.get("ranking_history", []), snapshot],
+                "phase_outputs": _append_phase(state, phase)}
+
     def reason(state):
         progress("reason", {"round": state["round"]})
-        packet = tools.packet()
+        ranking = state["agtr_ranking"]
+        top_ids = [c["chunk_id"] for c in ranking["ranked_candidates"][:settings.AGTR_LLM_CANDIDATES]]
+        # Graph expansion may reveal code no agent has read yet. Inspect the top candidates.
+        for cid in top_ids:
+            if not tools.has_code(cid, tools.evidence):
+                tools.execute("code", "read_code", {"chunk_id": cid, "lines": 40})
+        packet = tools.packet(candidate_ids=top_ids)
         if not any(e["kind"] == "code" for e in packet["evidence"]):
             phase = {"phase": "reason", "status": "completed", "round": state["round"],
                      "decision": "skipped", "reason": "no_code_evidence", "hypotheses": []}
             return {"hypotheses": [], "stop_reason": "no_code_evidence",
                     "phase_outputs": _append_phase(state, phase)}
-        result = gateway.generate("reason", {"bug": state["bug"], **packet}, Hypotheses)
+        result = gateway.generate("reason", {"bug": state["bug"], "agtr_weights": ranking["agtr_weights"],
+                                            "signal_availability": ranking["signal_availability"], **packet}, Hypotheses)
         visible_ids = {e["id"] for e in packet["evidence"]}
         # Validate source ownership and supporting code before any hypothesis is accepted.
         for hypothesis in result.hypotheses:
@@ -89,12 +114,17 @@ def build_investigation(gateway, tools, progress=lambda stage, details: None):
                 raise ModelOutputError("Hypothesis cited evidence outside its supplied context")
             if hypothesis.candidate_id not in tools.candidates or not tools.has_code(hypothesis.candidate_id, hypothesis.evidence_ids):
                 raise ModelOutputError("Hypothesis lacks cited code evidence for its candidate")
+            if hypothesis.candidate_id not in top_ids:
+                raise ModelOutputError("Hypothesis candidate was not supplied in the AGTR shortlist")
+            if top_ids.index(hypothesis.candidate_id) > 0 and not hypothesis.ranking_rationale.strip():
+                raise ModelOutputError("A lower-ranked hypothesis must explain its evidence-based ranking disagreement")
         phase = {
             "phase": "reason", "status": "completed", "round": state["round"],
             "decision": "generated_hypotheses",
             "hypotheses": [{"candidate_id": h.candidate_id, "mechanism": h.mechanism,
                             "suggested_fix": h.suggested_fix, "evidence_ids": h.evidence_ids,
                             "counterevidence_ids": h.counterevidence_ids,
+                            "ranking_rationale": h.ranking_rationale,
                             "assumptions": h.assumptions} for h in result.hypotheses],
             "missing_information": result.missing_information,
         }
@@ -164,6 +194,9 @@ def build_investigation(gateway, tools, progress=lambda stage, details: None):
             "verification": verification, "support_level": "supported" if supported else "insufficient",
             "runtime_verified": False, "termination_reason": reason, "rounds_used": state.get("round", 0),
             "limitations": list(dict.fromkeys(["Static analysis only; tests were not executed."] + verification.get("limitations", []))),
+            "selected_candidate_rank": next((c["rank"] for c in state.get("agtr_ranking", {}).get("ranked_candidates", [])
+                                               if primary and c["chunk_id"] == primary["candidate_id"]), None),
+            "ranking_rationale": primary.get("ranking_rationale", "") if primary else "",
         }
         phase = {
             "phase": "finalize", "status": "completed",
@@ -185,15 +218,15 @@ def build_investigation(gateway, tools, progress=lambda stage, details: None):
         return lambda state: "finalize" if state.get("stop_reason") == "budget_exhausted" else target
 
     builder = StateGraph(InvestigationState)
-    for name, node in {"understand": understand, "investigate": investigate, "reason": reason,
+    for name, node in {"understand": understand, "investigate": investigate, "rank": rank, "reason": reason,
                        "verify": verify, "replan": replan, "finalize": finalize}.items():
         builder.add_node(name, bounded(node))
     builder.add_edge(START, "understand")
     builder.add_conditional_edges("understand", continue_or_finish("investigate"))
-    builder.add_conditional_edges("investigate", continue_or_finish("reason"))
+    builder.add_conditional_edges("investigate", continue_or_finish("rank"))
+    builder.add_conditional_edges("rank", continue_or_finish("reason"))
     builder.add_conditional_edges("reason", continue_or_finish("verify"))
     builder.add_conditional_edges("verify", lambda state: "finalize" if state.get("stop_reason") == "budget_exhausted" else route(state))
     builder.add_edge("replan", "investigate")
     builder.add_edge("finalize", END)
     return builder.compile()
-

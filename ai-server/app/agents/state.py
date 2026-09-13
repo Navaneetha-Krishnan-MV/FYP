@@ -13,3 +13,5 @@ class InvestigationState(TypedDict, total=False):
     stop_reason: str
     report: dict
     phase_outputs: list[dict]
+    agtr_ranking: dict
+    ranking_history: list[dict]

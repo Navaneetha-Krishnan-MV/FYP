@@ -48,10 +48,9 @@ class Settings(BaseSettings):
     # Developer API (unlike Vertex) rejects inputs over the limit outright
     # rather than truncating, so this must stay comfortably under 2048 tokens.
     EMBEDDING_MAX_CHARS: int = Field(default=6000, ge=100, le=12000)
-    # How many AGTR-ranked candidates get their full code sent to Gemini for root
-    # cause reasoning. Keep this matched to what the UI's "Ranked Candidates"
-    # panel shows, so Gemini reasons over the same evidence the user can see.
-    AGTR_LLM_CANDIDATES: int = 10
+    # Ranked shortlist for either reasoning provider; source reads remain bounded.
+    AGTR_LLM_CANDIDATES: int = Field(default=10, ge=1, le=20)
+    AGTR_MAX_CANDIDATES: int = Field(default=40, ge=20, le=100)
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = "logs/ai-server.log"
     PORT: int = 8000

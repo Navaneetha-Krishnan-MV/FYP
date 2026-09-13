@@ -30,6 +30,12 @@ class FakeRepository:
     def semantic_search(self, query, limit=5):
         return [{**self.chunk("chunk-1"), "semantic_score": 0.9}]
 
+    def score_semantic_candidates(self, query, chunk_ids):
+        return {cid: 0.9 for cid in chunk_ids}
+
+    def ranking_graph(self):
+        return []
+
     def read_code(self, chunk_id, offset=0, lines=80):
         self.reads += 1
         return self.chunk(chunk_id)
@@ -155,6 +161,9 @@ def test_graph_supported_result_requires_real_code_evidence():
     assert result["report"]["outcome"] == "supported_hypothesis"
     assert result["report"]["runtime_verified"] is False
     assert tools.evidence
+    assert [p["phase"] for p in result["phase_outputs"]] == ["understand", "investigate", "rank", "reason", "verify", "finalize"]
+    assert result["agtr_ranking"]["agtr_weights"] == {"ws": 1, "wg": 0, "wt": 0}
+    assert result["report"]["selected_candidate_rank"] == 1
 
 
 def test_graph_reinvestigates_then_stops_when_no_new_evidence():
@@ -164,6 +173,9 @@ def test_graph_reinvestigates_then_stops_when_no_new_evidence():
     assert gateway.verifications == 2
     assert result["report"]["rounds_used"] == 2
     assert result["report"]["outcome"] == "inconclusive"
+    assert [r["round"] for r in result["ranking_history"]] == [1, 2]
+    phases = [p["phase"] for p in result["phase_outputs"]]
+    assert phases[phases.index("replan") + 1:][:3] == ["investigate", "rank", "reason"]
 
 
 def test_graph_rejects_invented_verifier_evidence():
@@ -179,3 +191,43 @@ def test_graph_finalizes_without_more_model_calls_when_budget_exhausted(monkeypa
     assert result["report"]["outcome"] == "inconclusive"
     assert result["report"]["termination_reason"] == "budget_exhausted"
     assert tools.budget.llm_calls == 1
+
+
+def test_run_role_cached_preseed_and_internal_repeat():
+    from app.agents.runner import run_role
+
+    tools = ToolExecutor(FakeRepository(), Budget())
+    # Pre-seed a search into cache
+    tools.execute("code", "semantic_search", {"query": "expired", "limit": 5})
+
+    class MultiStepGateway:
+        def __init__(self):
+            self.step = 0
+            self.seen_observation = None
+
+        def generate(self, role, payload, schema):
+            self.seen_observation = payload.get("observation")
+            if self.step == 0:
+                self.step += 1
+                # Agent requests the exact same search that was pre-seeded
+                data = {"response": {"action": "tool", "tool": "semantic_search", "arguments": {"query": "expired", "limit": 5}}}
+            elif self.step == 1:
+                self.step += 1
+                # Agent received the cached observation! Now it inspects and finishes.
+                data = {"response": {"action": "finish", "result": {"summary": "Found expired method in session.py", "evidence_ids": []}}}
+            return schema.model_validate(data)
+
+    gateway = MultiStepGateway()
+    finding, trace = run_role("code", "Find session expiry", gateway, tools)
+    assert finding.summary == "Found expired method in session.py"
+    assert gateway.seen_observation is not None
+    assert gateway.seen_observation.get("cached") is True
+
+    # Now verify that repeating the same call within the role DOES terminate
+    class LoopingGateway:
+        def generate(self, role, payload, schema):
+            return schema.model_validate({"response": {"action": "tool", "tool": "read_code", "arguments": {"chunk_id": "chunk-1"}}})
+
+    loop_finding, loop_trace = run_role("code", "Looping agent", LoopingGateway(), tools)
+    assert "Repeated check" in loop_finding.summary
+

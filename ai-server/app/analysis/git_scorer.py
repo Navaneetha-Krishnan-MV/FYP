@@ -37,7 +37,8 @@ def compute_git_temporal_scores(
     project_id: str,
     candidates: List[Dict[str, Any]],
     bug_search_terms: List[str],
-    mu_decay: float = 0.05
+    mu_decay: float = 0.05,
+    *, connection=None, as_of=None, strict=False, aligned_revision=None, metadata=None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Step 3 of AGTR: Temporal Git Decay T(v) = R(v) * e^(-mu * delta_t)
@@ -50,13 +51,15 @@ def compute_git_temporal_scores(
     if not candidates:
         return candidates, []
 
-    conn = get_db_connection()
+    conn = connection or get_db_connection()
     cursor = conn.cursor()
 
     git_evidence_commits = []
 
     try:
         # Fetch all commits for this project with changes
+        cutoff = as_of or datetime.now(timezone.utc)
+        extra_filter = ' AND c."committedAt" <= %s AND cc."filePath" = ANY(%s)' if strict else ''
         cursor.execute(
             """
             SELECT
@@ -69,14 +72,19 @@ def compute_git_temporal_scores(
             FROM "Commit" c
             JOIN "CommitChange" cc ON c."id" = cc."commitId"
             WHERE c."projectId" = %s
-            ORDER BY c."committedAt" DESC
+            """ + extra_filter + """
+            ORDER BY c."committedAt" DESC, c."commitHash", cc."filePath", cc.id
             LIMIT 100;
             """,
-            (project_id,)
+            (project_id, cutoff, sorted({c["file_path"] for c in candidates})) if strict else (project_id,)
         )
         rows = cursor.fetchall()
 
-        now = datetime.now(timezone.utc)
+        now = cutoff
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        if metadata is not None:
+            metadata["available"] = bool(rows)
         # file_path -> list of per-commit entries, each usable to score any
         # candidate function in that file.
         file_commit_entries: Dict[str, List[Dict[str, Any]]] = {}
@@ -115,6 +123,7 @@ def compute_git_temporal_scores(
                 "term_bonus": term_bonus,
                 "time_decay": time_decay,
                 "latest_commit": commit_hash[:8],
+                "revision": commit_hash,
             })
 
             # File-level relevance, used only for the evidence commits shown
@@ -143,7 +152,9 @@ def compute_git_temporal_scores(
             best_score = None
             best_commit = None
             for entry in entries:
-                direct_hit = hunks_overlap_range(entry["hunks"], start_line, end_line)
+                # Historic coordinates cannot be equated to the current snapshot.
+                aligned = not strict or entry["revision"] == aligned_revision
+                direct_hit = aligned and hunks_overlap_range(entry["hunks"], start_line, end_line)
                 base = 0.3 if direct_hit else 0.15
                 r_v = min(1.0, base + entry["term_bonus"])
                 t_score = round(r_v * entry["time_decay"], 4)
@@ -155,16 +166,19 @@ def compute_git_temporal_scores(
                 c["git_score"] = best_score
                 c["latest_commit"] = best_commit
             else:
-                c["git_score"] = 0.1  # baseline: file never touched
+                c["git_score"] = 0.0 if strict else 0.1
                 c["latest_commit"] = "N/A"
 
     except Exception as e:
+        if strict:
+            raise
         print(f"Git temporal scoring warning: {e}")
         for c in candidates:
             c["git_score"] = 0.1
             c["latest_commit"] = "N/A"
     finally:
         cursor.close()
-        conn.close()
+        if connection is None:
+            conn.close()
 
     return candidates, git_evidence_commits
